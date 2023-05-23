@@ -1,12 +1,17 @@
 """
 Write nexus file
 """
+import csv
+
 from pathlib import Path
 from nexusmaker import load_cldf
 from nexusmaker import NexusMaker
 from nexusmaker import NexusMakerAscertained
 from nexusmaker import NexusMakerAscertainedParameters
 from nexusmaker.tools import remove_combining_cognates
+
+from cldfcatalog import Config
+from pyglottolog import Glottolog
 
 root = Path(__file__).parent.parent
 
@@ -31,9 +36,19 @@ def register(parser):
         default=None,
         type=int,
         help="set level at which to filter combined cognates")
+    parser.add_argument(
+        "--subtree",
+        default=None,
+        type=str,
+        help="filter output to subtree below specified glottocode"
+    )
 
 
 def run(args):
+    # Load glottolog clone
+    cfg = Config.from_file()
+    glottolog = Glottolog(cfg.get_clone("glottolog"))
+    lgfile = root / 'cldf' / "languages.csv"
     mdfile = root / 'cldf' / "cldf-metadata.json"
     records = list(load_cldf(mdfile, table='FormTable'))
     args.log.info('%8d records loaded from %s' % (len(records), mdfile))
@@ -51,7 +66,29 @@ def run(args):
             ))
             if change == 0:
                 args.log.warn("No records removed for parameter %s" % param)
-    
+
+    if args.subtree:
+        filtered = []
+        subtree = glottolog.languoid(args.subtree)
+        subgroup = [l.glottocode for l in subtree.iter_descendants()]
+        # Resolve ABVD slug <-> glottocode mapping and filter languages not below gcode
+        nrecords = len(records)
+        with open(lgfile) as f:
+            langs = [r for r in csv.DictReader(f, delimiter=",")]
+        lookup = {row["ID"]: row["Glottocode"] for row in langs}
+        # Do the filtering
+        for r in records:
+            gcode = lookup[r.Language_ID]
+            if gcode in subgroup:
+                filtered.append(r)
+        records = filtered
+        change = nrecords - len(records)
+        args.log.info('%8d records pruned around subtree %s %s' % (
+            change, args.subtree, subtree.name
+        ))
+        if change == 0:
+            args.log.warn("No records removed for parameter %s" % subtree)
+
     args.log.info(
         '%8d records written to nexus %s using ascertainment=%s' % (
         len(records), args.output, args.ascertainment
